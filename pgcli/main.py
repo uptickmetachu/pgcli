@@ -1,83 +1,79 @@
-from configobj import ConfigObj, ParseError
-from pgspecial.namedqueries import NamedQueries
-from .config import skip_initial_comment
-
 import atexit
-import os
-import re
-import sys
-import traceback
-import logging
-import threading
-import shutil
-import functools
-import pendulum
 import datetime as dt
+import functools
 import itertools
+import logging
+import os
 import platform
-from time import time, sleep
+import re
+import shutil
+import sys
+import threading
+import traceback
+from time import sleep, time
 from typing import Optional
 
+import click
+import pendulum
 from cli_helpers.tabular_output import TabularOutputFormatter
 from cli_helpers.tabular_output.preprocessors import align_decimals, format_numbers
 from cli_helpers.utils import strip_ansi
+from configobj import ConfigObj, ParseError
+from pgspecial.namedqueries import NamedQueries
+
+from .config import skip_initial_comment
 from .explain_output_formatter import ExplainOutputFormatter
-import click
 
 try:
     import setproctitle
 except ImportError:
     setproctitle = None
+import pgspecial as special
+from pgspecial.main import NO_QUERY, PAGER_LONG_OUTPUT, PAGER_OFF, PGSpecial
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import DynamicCompleter, ThreadedCompleter
-from prompt_toolkit.enums import DEFAULT_BUFFER, EditingMode
-from prompt_toolkit.shortcuts import PromptSession, CompleteStyle
 from prompt_toolkit.document import Document
+from prompt_toolkit.enums import DEFAULT_BUFFER, EditingMode
 from prompt_toolkit.filters import HasFocus, IsDone
 from prompt_toolkit.formatted_text import ANSI
-from prompt_toolkit.lexers import PygmentsLexer
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.layout.processors import (
     ConditionalProcessor,
     HighlightMatchingBracketProcessor,
     TabsProcessor,
 )
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.lexers import PygmentsLexer
+from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 from pygments.lexers.sql import PostgresLexer
 
-from pgspecial.main import PGSpecial, NO_QUERY, PAGER_OFF, PAGER_LONG_OUTPUT
-import pgspecial as special
-
 from . import auth
-from .pgcompleter import PGCompleter
-from .pgtoolbar import create_toolbar_tokens_func
-from .pgstyle import style_factory, style_factory_output
-from .pgexecute import PGExecute
+from .__init__ import __version__
 from .completion_refresher import CompletionRefresher
 from .config import (
-    get_casing_file,
-    load_config,
     config_location,
     ensure_dir_exists,
+    get_casing_file,
     get_config,
     get_config_filename,
+    load_config,
 )
 from .key_bindings import pgcli_bindings
 from .packages.formatter.sqlformatter import register_new_formatter
+from .packages.parseutils import is_destructive, parse_destructive_warning
 from .packages.prompt_utils import confirm, confirm_destructive_query
-from .packages.parseutils import is_destructive
-from .packages.parseutils import parse_destructive_warning
-from .__init__ import __version__
+from .pgcompleter import PGCompleter
+from .pgexecute import PGExecute
+from .pgstyle import style_factory, style_factory_output
+from .pgtoolbar import create_toolbar_tokens_func
 
 click.disable_unicode_literals_warning = True
 
+from collections import namedtuple
+from getpass import getuser
 from urllib.parse import urlparse
 
-from getpass import getuser
-
-from psycopg import OperationalError, InterfaceError
-from psycopg.conninfo import make_conninfo, conninfo_to_dict
-
-from collections import namedtuple
+from psycopg import InterfaceError, OperationalError
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 try:
     import sshtunnel
@@ -1034,7 +1030,7 @@ class PGCli:
             )
             execution = time() - start
             formatted = format_output(
-                title, cur, headers, status, settings, self.explain_mode
+                title, cur, headers, status, settings, self.explain_mode, sql_text=text
             )
 
             output.extend(formatted)
@@ -1530,14 +1526,18 @@ def exception_formatter(e):
     return click.style(str(e), fg="red")
 
 
-def format_output(title, cur, headers, status, settings, explain_mode=False):
+def format_output(
+    title, cur, headers, status, settings, explain_mode=False, sql_text=None
+):
     output = []
     expanded = settings.expanded or settings.table_format == "vertical"
     table_format = "vertical" if settings.expanded else settings.table_format
     max_width = settings.max_width
     case_function = settings.case_function
     if explain_mode:
-        formatter = ExplainOutputFormatter(max_width or 100)
+        formatter = ExplainOutputFormatter(
+            max_width=max_width, title=title, settings=settings, sql_text=sql_text
+        )
     else:
         formatter = TabularOutputFormatter(format_name=table_format)
 

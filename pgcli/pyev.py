@@ -1,5 +1,6 @@
-import textwrap
 import re
+import textwrap
+
 from click import style as color
 
 DESCRIPTIONS = {
